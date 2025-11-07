@@ -1,6 +1,7 @@
 #!/bin/sh -e
 
-if [ -n "$@" ]; then
+# If command is provided, execute it.
+if [ "$#" -gt 0 ]; then
   exec "$@"
 fi
 
@@ -8,42 +9,47 @@ fi
 if [ -z "$NGROK_PORT" ]; then
   if [ -n "$HTTPS_PORT" ]; then
     NGROK_PORT="$HTTPS_PORT"
-  elif [ -n "$HTTPS_PORT" ]; then
+  elif [ -n "$HTTP_PORT" ]; then
     NGROK_PORT="$HTTP_PORT"
   elif [ -n "$APP_PORT" ]; then
     NGROK_PORT="$APP_PORT"
   fi
 fi
 
+# Build args safely using positional parameters.
+set -- ngrok
 
-ARGS="ngrok"
+# Set the protocol and default port.
+case "$NGROK_PROTOCOL" in
+  TCP)
+    set -- "$@" tcp
+    ;;
+  TLS)
+    set -- "$@" tls
+    NGROK_PORT="${NGROK_PORT:-443}"
+    ;;
+  *)
+    set -- "$@" http
+    NGROK_PORT="${NGROK_PORT:-80}"
+    ;;
+esac
 
-# Set the protocol.
-if [ "$NGROK_PROTOCOL" = "TCP" ]; then
-  ARGS="$ARGS tcp"
-elif [ "$NGROK_PROTOCOL" = "TLS" ]; then
-  ARGS="$ARGS tls"
-  NGROK_PORT="${NGROK_PORT:-443}"
-else
-  ARGS="$ARGS http"
-  NGROK_PORT="${NGROK_PORT:-80}"
-fi
-
-# Set the TLS binding flag
+# Set the TLS binding flag.
 if [ -n "$NGROK_BINDTLS" ]; then
-  ARGS="$ARGS -bind-tls=$NGROK_BINDTLS "
+  set -- "$@" "-bind-tls=$NGROK_BINDTLS"
 fi
 
-# Set the authorization token.
+# Set the authorization token (write to config).
 if [ -n "$NGROK_AUTH" ]; then
-  echo -e "\nauthtoken: $NGROK_AUTH" >> $HOME/.ngrok2/ngrok.yml
+  mkdir -p "$HOME/.ngrok2"
+  printf '\nauthtoken: %s\n' "$NGROK_AUTH" >> "$HOME/.ngrok2/ngrok.yml"
 fi
 
-# Set the subdomain or hostname, depending on which is set
+# Set the subdomain or hostname (requires auth).
 if [ -n "$NGROK_HOSTNAME" ] && [ -n "$NGROK_AUTH" ]; then
-  ARGS="$ARGS -hostname=$NGROK_HOSTNAME "
+  set -- "$@" "-hostname=$NGROK_HOSTNAME"
 elif [ -n "$NGROK_SUBDOMAIN" ] && [ -n "$NGROK_AUTH" ]; then
-  ARGS="$ARGS -subdomain=$NGROK_SUBDOMAIN "
+  set -- "$@" "-subdomain=$NGROK_SUBDOMAIN"
 elif [ -n "$NGROK_HOSTNAME" ] || [ -n "$NGROK_SUBDOMAIN" ]; then
   if [ -z "$NGROK_AUTH" ]; then
     echo "You must specify an authentication token after registering at https://ngrok.com to use custom domains."
@@ -51,48 +57,55 @@ elif [ -n "$NGROK_HOSTNAME" ] || [ -n "$NGROK_SUBDOMAIN" ]; then
   fi
 fi
 
-# Set the remote-addr if specified
+# Set the reserved remote address (requires auth).
 if [ -n "$NGROK_REMOTE_ADDR" ]; then
   if [ -z "$NGROK_AUTH" ]; then
-    echo "You must specify an authentication token after registering at https://ngrok.com to use reserved ip addresses."
+    echo "You must specify an authentication token after registering at https://ngrok.com to use reserved IP addresses."
     exit 1
   fi
-  ARGS="$ARGS -remote-addr=$NGROK_REMOTE_ADDR "
+  set -- "$@" "-remote-addr=$NGROK_REMOTE_ADDR"
 fi
 
-# Set a custom region
+# Set a custom region.
 if [ -n "$NGROK_REGION" ]; then
-  ARGS="$ARGS -region=$NGROK_REGION "
+  set -- "$@" "-region=$NGROK_REGION"
 fi
 
+# Set a custom Host header.
 if [ -n "$NGROK_HEADER" ]; then
-  ARGS="$ARGS -host-header=$NGROK_HEADER "
+  set -- "$@" "-host-header=$NGROK_HEADER"
 fi
 
+# Set HTTP basic auth (requires auth token present).
 if [ -n "$NGROK_USERNAME" ] && [ -n "$NGROK_PASSWORD" ] && [ -n "$NGROK_AUTH" ]; then
-  ARGS="$ARGS -auth=$NGROK_USERNAME:$NGROK_PASSWORD "
+  set -- "$@" "-auth=$NGROK_USERNAME:$NGROK_PASSWORD"
 elif [ -n "$NGROK_USERNAME" ] || [ -n "$NGROK_PASSWORD" ]; then
   if [ -z "$NGROK_AUTH" ]; then
-    echo "You must specify a username, password, and Ngrok authentication token to use the custom HTTP authentication."
+    echo "You must specify a username, password, and Ngrok authentication token to use custom HTTP authentication."
     echo "Sign up for an authentication token at https://ngrok.com"
     exit 1
   fi
 fi
 
+# Enable debug logging to stdout.
 if [ -n "$NGROK_DEBUG" ]; then
-    ARGS="$ARGS -log stdout"
+  set -- "$@" -log stdout
 fi
 
-# Set the port.
+# Ensure port is set.
 if [ -z "$NGROK_PORT" ]; then
-  echo "You must specify a NGROK_PORT to expose."
+  echo "You must specify an NGROK_PORT to expose."
   exit 1
 fi
 
+# Final target (optionally with a look domain), strip any tcp:// prefix.
 if [ -n "$NGROK_LOOK_DOMAIN" ]; then
-  ARGS="$ARGS `echo $NGROK_LOOK_DOMAIN:$NGROK_PORT | sed 's|^tcp://||'`"
+  target="$NGROK_LOOK_DOMAIN:$NGROK_PORT"
 else
-  ARGS="$ARGS `echo $NGROK_PORT | sed 's|^tcp://||'`"
+  target="$NGROK_PORT"
 fi
+target=${target#tcp://}
 
-exec $ARGS
+set -- "$@" "$target"
+
+exec "$@"
